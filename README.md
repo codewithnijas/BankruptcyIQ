@@ -151,10 +151,8 @@ Predictions should not be used for real financial decision-making.
 
 ## 👨‍💻 Author
 
-**Your Name**
+**Muhammed Nijas**
 
-* GitHub: https://github.com/yourusername
-* LinkedIn: https://linkedin.com/in/yourprofile
 
 ---
 
