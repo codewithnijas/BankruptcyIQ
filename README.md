@@ -88,7 +88,7 @@ The application includes:
 
 ```bash
 # Clone the repository
-git clone https://github.com/your-username/BankruptcyIQ
+git clone https://github.com/codewithnijas/BankruptcyIQ
 cd BankruptcyIQ
 
 # Install dependencies
