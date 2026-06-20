@@ -1,9 +1,3 @@
-# =====================================================
-# STARTUP BANKRUPTCY PREDICTOR — Portfolio Edition
-# Author: Your Name
-# Stack: Python · Streamlit · scikit-learn
-# =====================================================
-
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -23,10 +17,11 @@ from sklearn.tree import DecisionTreeClassifier
 from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
 from sklearn.svm import SVC
 from sklearn.neighbors import KNeighborsClassifier
-
+from xgboost import XGBClassifier
 from sklearn.metrics import (
     accuracy_score, confusion_matrix, classification_report,
-    roc_curve, auc, precision_recall_curve, average_precision_score
+    roc_curve, auc, precision_recall_curve, average_precision_score,
+    precision_score, recall_score, f1_score
 )
 
 
@@ -305,9 +300,15 @@ MODEL_REGISTRY = {
         n_estimators=300, max_depth=5, learning_rate=0.05,
         subsample=0.8, random_state=42
     ),
-    "Logistic Regression": LogisticRegression(max_iter=2000, class_weight="balanced"),
+    "XGBoost": XGBClassifier(
+        n_estimators=300, max_depth=5, learning_rate=0.05,
+        subsample=0.8, colsample_bytree=0.8,
+        scale_pos_weight=(y.value_counts()[0] / y.value_counts()[1]),
+        eval_metric="logloss", random_state=42, n_jobs=-1
+    ),    
+    "Logistic Regression": LogisticRegression(max_iter=2000, class_weight="balanced",random_state=42),
     "Decision Tree":       DecisionTreeClassifier(max_depth=10, min_samples_leaf=10, random_state=42),
-    "SVM":                 SVC(probability=True, class_weight="balanced"),
+    "SVM":                 SVC(probability=True, class_weight="balanced",random_state=42),
     "KNN":                 KNeighborsClassifier(n_neighbors=7)
 }
 
@@ -344,10 +345,13 @@ def benchmark_all_models():
         y_prob = pipe.predict_proba(X_test)[:, 1]
         fpr, tpr, _ = roc_curve(y_test, y_prob)
         results.append({
-            "Model":    name,
-            "Accuracy": accuracy_score(y_test, y_pred),
-            "ROC-AUC":  auc(fpr, tpr),
-            "Avg Prec": average_precision_score(y_test, y_prob),
+            "Model":     name,
+            "Accuracy":  accuracy_score(y_test, y_pred),
+            "ROC-AUC":   auc(fpr, tpr),
+            "Avg Prec":  average_precision_score(y_test, y_prob),
+            "Precision": precision_score(y_test, y_pred, zero_division=0),
+            "Recall":    recall_score(y_test, y_pred, zero_division=0),
+            "F1 Score":  f1_score(y_test, y_pred, zero_division=0),
         })
     return pd.DataFrame(results).sort_values("ROC-AUC", ascending=False)
 
@@ -361,8 +365,9 @@ st.sidebar.markdown("---")
 st.sidebar.markdown("""
 <div style='font-family:IBM Plex Mono,monospace;font-size:0.72rem;color:#5a7184;line-height:1.8'>
 <b style='color:#f0a500'>FEATURES</b><br>
-· 14 engineered features<br>
-· Feature importance charts<br>
+· 13 startup input variables<br>
+· 5 engineered financial ratios<br>
+· Feature importance analysis<br>
 · ROC / PR curves<br>
 · Model benchmarking<br>
 · Batch CSV scoring<br>
@@ -419,10 +424,9 @@ st.markdown("<br>", unsafe_allow_html=True)
 # ─────────────────────────────────────────────────────────
 # TABS
 # ─────────────────────────────────────────────────────────
-tab1, tab2, tab3, tab4 = st.tabs([
+tab1, tab2, tab3 = st.tabs([
     "🎯  Predict",
     "📊  Evaluation",
-    "🔍  Feature Analysis",
     "⚖️  Benchmark"
 ])
 
@@ -612,137 +616,67 @@ with tab2:
         st.pyplot(fig, use_container_width=True)
         plt.close()
 
+    st.markdown("<br>", unsafe_allow_html=True)
+    st.markdown("**Feature Importance**")
+    model_step = pipeline.named_steps["model"]
 
-# ══════════════════════════════════════════════════════════
-# TAB 3 — FEATURE ANALYSIS
-# ══════════════════════════════════════════════════════════
-with tab3:
-    st.markdown("<div class='section-title'>Feature Analysis</div>", unsafe_allow_html=True)
+    # Get feature names from the fitted preprocessor
+    cat_names = (
+        pipeline.named_steps["preprocessor"]
+        .named_transformers_["cat"]
+        .named_steps["encoder"]
+        .get_feature_names_out(categorical_features)
+        .tolist()
+    )
+    all_names = numerical_features + cat_names
 
-    col_a, col_b = st.columns(2)
-
-    # ── Left: Feature importance
-    with col_a:
-        st.markdown("**Feature Importance**")
-        model_step = pipeline.named_steps["model"]
-
-        # Get feature names from the fitted preprocessor
-        cat_names = (
-            pipeline.named_steps["preprocessor"]
-            .named_transformers_["cat"]
-            .named_steps["encoder"]
-            .get_feature_names_out(categorical_features)
-            .tolist()
+    if hasattr(model_step, "feature_importances_"):
+        # Tree-based models (Random Forest, Gradient Boosting, Decision Tree)
+        importances = model_step.feature_importances_
+        n = min(len(importances), len(all_names))
+        imp_df = (
+            pd.DataFrame({"Feature": all_names[:n], "Score": importances[:n]})
+            .sort_values("Score", ascending=False)
+            .head(15)
         )
-        all_names = numerical_features + cat_names
+        xlabel = "Gini Importance"
 
-        if hasattr(model_step, "feature_importances_"):
-            # Tree-based models (Random Forest, Gradient Boosting, Decision Tree)
-            importances = model_step.feature_importances_
-            n = min(len(importances), len(all_names))
-            imp_df = (
-                pd.DataFrame({"Feature": all_names[:n], "Score": importances[:n]})
-                .sort_values("Score", ascending=False)
-                .head(15)
-            )
-            xlabel = "Gini Importance"
-
-        elif hasattr(model_step, "coef_"):
-            # Logistic Regression
-            importances = np.abs(model_step.coef_[0])
-            n = min(len(importances), len(all_names))
-            imp_df = (
-                pd.DataFrame({"Feature": all_names[:n], "Score": importances[:n]})
-                .sort_values("Score", ascending=False)
-                .head(15)
-            )
-            xlabel = "|Coefficient|"
-
-        else:
-            imp_df = None
-            xlabel = ""
-
-        if imp_df is not None:
-            fig, ax = plt.subplots(figsize=(5, 4.8))
-            colors = [AMBER if v >= imp_df["Score"].median() else "#4a6fa5"
-                      for v in imp_df["Score"]]
-            ax.barh(imp_df["Feature"][::-1], imp_df["Score"][::-1],
-                    color=colors[::-1], edgecolor="none", height=0.65)
-            ax.set_xlabel(xlabel, labelpad=8)
-            ax.set_title("Top 15 Feature Importances", pad=10)
-            ax.grid(axis="x", alpha=0.3)
-            ax.spines[["top", "right", "left"]].set_visible(False)
-            st.pyplot(fig, use_container_width=True)
-            plt.close()
-        else:
-            st.info("Switch to a tree-based model or Logistic Regression "
-                    "to see feature importances.")
-
-    # ── Right: Correlation heatmap
-    with col_b:
-        st.markdown("**Correlation Heatmap**")
-        corr = df[numerical_features + ["Bankrupt"]].corr()
-        fig, ax = plt.subplots(figsize=(5, 4.8))
-        mask = np.triu(np.ones_like(corr, dtype=bool))
-        sns.heatmap(
-            corr, mask=mask, cmap="RdYlGn", center=0, ax=ax,
-            linewidths=0.3, linecolor="#1e2d3d",
-            cbar_kws={"shrink": 0.7}, annot=False
+    elif hasattr(model_step, "coef_"):
+        # Logistic Regression
+        importances = np.abs(model_step.coef_[0])
+        n = min(len(importances), len(all_names))
+        imp_df = (
+            pd.DataFrame({"Feature": all_names[:n], "Score": importances[:n]})
+            .sort_values("Score", ascending=False)
+            .head(15)
         )
-        ax.set_title("Numerical Feature Correlations", pad=10)
-        ax.tick_params(axis="x", rotation=45, labelsize=7)
-        ax.tick_params(axis="y", rotation=0,  labelsize=7)
+        xlabel = "|Coefficient|"
+
+    else:
+        imp_df = None
+        xlabel = ""
+
+    if imp_df is not None:
+        fig, ax = plt.subplots(figsize=(9, 4.8))
+        colors = [AMBER if v >= imp_df["Score"].median() else "#4a6fa5"
+                  for v in imp_df["Score"]]
+        ax.barh(imp_df["Feature"][::-1], imp_df["Score"][::-1],
+                color=colors[::-1], edgecolor="none", height=0.65)
+        ax.set_xlabel(xlabel, labelpad=8)
+        ax.set_title("Top 15 Feature Importances", pad=10)
+        ax.grid(axis="x", alpha=0.3)
+        ax.spines[["top", "right", "left"]].set_visible(False)
         st.pyplot(fig, use_container_width=True)
         plt.close()
-
-    # ── Bottom: Class distribution histograms
-    st.markdown("<br>", unsafe_allow_html=True)
-    st.markdown("<div class='section-title'>Bankrupt vs Healthy — Key Feature Distributions</div>",
-                unsafe_allow_html=True)
-    st.markdown("""
-    <div style='font-family:IBM Plex Mono;font-size:0.75rem;color:#5a7184;margin-bottom:16px'>
-    Overlapping distributions reveal which features best separate the two classes.
-    Wider separation = stronger predictor.
-    </div>""", unsafe_allow_html=True)
-
-    highlight_features = [
-        "Revenue_to_Burn", "Profit_Margin", "Debt_to_Funding",
-        "Customer_Growth_Rate", "Burn_Rate_MUSD", "Cost_to_Revenue"
-    ]
-    healthy  = df[df["Bankrupt"] == 0]
-    bankrupt = df[df["Bankrupt"] == 1]
-
-    fig, axes = plt.subplots(2, 3, figsize=(11, 5.5))
-    axes = axes.flatten()
-
-    for i, feat in enumerate(highlight_features):
-        ax = axes[i]
-        lo = df[feat].quantile(0.02)
-        hi = df[feat].quantile(0.98)
-        h_vals = healthy[feat].dropna().clip(lo, hi)
-        b_vals = bankrupt[feat].dropna().clip(lo, hi)
-
-        ax.hist(h_vals, bins=40, color=GREEN, alpha=0.55,
-                label="Healthy",  density=True, edgecolor="none")
-        ax.hist(b_vals, bins=40, color=RED,   alpha=0.55,
-                label="Bankrupt", density=True, edgecolor="none")
-        ax.set_title(feat.replace("_", " "), fontsize=9, pad=6)
-        ax.set_ylabel("Density", fontsize=7)
-        ax.tick_params(labelsize=7)
-        ax.grid(axis="y", alpha=0.25)
-        ax.spines[["top", "right"]].set_visible(False)
-        if i == 0:
-            ax.legend(fontsize=7, loc="upper right")
-
-    fig.suptitle("Feature Distributions by Class", fontsize=10, y=1.01)
-    st.pyplot(fig, use_container_width=True)
-    plt.close()
+    else:
+        st.info("Switch to a tree-based model or Logistic Regression "
+                "to see feature importances.")
 
 
 # ══════════════════════════════════════════════════════════
-# TAB 4 — BENCHMARK
+# TAB 3 — BENCHMARK
 # ══════════════════════════════════════════════════════════
-with tab4:
+with tab3:
     st.markdown("<div class='section-title'>Model Benchmarking</div>", unsafe_allow_html=True)
     with st.spinner("Training & evaluating all models…"):
         bench_df = benchmark_all_models()
@@ -753,8 +687,14 @@ with tab4:
         st.markdown("**Performance Comparison**")
         st.dataframe(
             bench_df.style
-                .highlight_max(subset=["Accuracy", "ROC-AUC", "Avg Prec"], color="#1a2e1a")
-                .format({"Accuracy": "{:.3f}", "ROC-AUC": "{:.3f}", "Avg Prec": "{:.3f}"}),
+                .highlight_max(
+                    subset=["Accuracy", "ROC-AUC", "Avg Prec", "Precision", "Recall", "F1 Score"],
+                    color="#1a2e1a"
+                )
+                .format({
+                    "Accuracy": "{:.3f}", "ROC-AUC": "{:.3f}", "Avg Prec": "{:.3f}",
+                    "Precision": "{:.3f}", "Recall": "{:.3f}", "F1 Score": "{:.3f}"
+                }),
             use_container_width=True
         )
 
@@ -777,21 +717,26 @@ with tab4:
 
     st.markdown("<br>", unsafe_allow_html=True)
     st.markdown("**Multi-Metric Bar Chart**")
-    fig, ax = plt.subplots(figsize=(9, 3.5))
+    fig, ax = plt.subplots(figsize=(11, 3.8))
     x     = np.arange(len(bench_df))
-    width = 0.26
-    for i, (metric, clr) in enumerate(zip(["Accuracy", "ROC-AUC", "Avg Prec"],
-                                           [AMBER, BLUE, GREEN])):
+    width = 0.13
+    metrics_colors = [
+        ("Accuracy",  AMBER),
+        ("ROC-AUC",   BLUE),
+        ("Avg Prec",  GREEN),
+        ("Precision", "#c084fc"),
+        ("Recall",    "#f87171"),
+        ("F1 Score",  "#67e8f9"),
+    ]
+    for i, (metric, clr) in enumerate(metrics_colors):
         ax.bar(x + i * width, bench_df[metric], width,
                label=metric, color=clr, alpha=0.85, edgecolor="none")
-    ax.set_xticks(x + width)
+    ax.set_xticks(x + width * (len(metrics_colors) - 1) / 2)
     ax.set_xticklabels(bench_df["Model"], fontsize=8.5)
     ax.set_ylim(0, 1.08)
-    ax.legend(fontsize=8)
+    ax.legend(fontsize=8, ncol=3)
     ax.set_title("All Models · All Metrics", pad=10)
     ax.grid(axis="y", alpha=0.3)
     ax.spines[["top", "right", "left"]].set_visible(False)
     st.pyplot(fig, use_container_width=True)
     plt.close()
-
-
